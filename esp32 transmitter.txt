@@ -1,0 +1,188 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <DHT.h>
+
+// ================= DHT11 =================
+#define DHT_PIN 4
+#define DHT_TYPE DHT11
+
+DHT dht(DHT_PIN, DHT_TYPE);
+
+// ================= Sensors =================
+#define GAS_PIN 34
+#define VIBRATION_PIN 27
+#define FLAME_PIN 26
+
+// ================= LoRa =================
+#define LORA_SCK 18
+#define LORA_MISO 19
+#define LORA_MOSI 23
+#define LORA_SS 5
+#define LORA_RST 14
+#define LORA_DIO0 25
+
+#define LORA_FREQUENCY 433E6
+
+// ================= Settings =================
+unsigned long packetID = 0;
+
+// Vibration debounce
+int lastVibration = 0;
+int stableVibration = 0;
+unsigned long vibrationChangeTime = 0;
+
+// Flame sensor modules commonly give LOW when flame is detected
+#define FLAME_DETECTED LOW
+
+void setup() {
+
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("=================================");
+  Serial.println(" LoRa Industrial Monitoring");
+  Serial.println(" ESP32 TRANSMITTER");
+  Serial.println("=================================");
+
+  dht.begin();
+
+  pinMode(VIBRATION_PIN, INPUT);
+  pinMode(FLAME_PIN, INPUT);
+
+  // LoRa SPI
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
+
+  LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
+
+  Serial.println("Starting LoRa...");
+
+  if (!LoRa.begin(LORA_FREQUENCY)) {
+    Serial.println("ERROR: LoRa initialization failed!");
+    while (1) {
+      delay(1000);
+    }
+  }
+
+  // Better LoRa settings
+  LoRa.setTxPower(17);
+  LoRa.setSpreadingFactor(7);
+  LoRa.setSignalBandwidth(125E3);
+  LoRa.setCodingRate4(5);
+  LoRa.enableCrc();
+
+  Serial.println("LoRa initialized successfully.");
+  Serial.println();
+}
+
+void loop() {
+
+  // ================= DHT11 =================
+
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  if (isnan(temperature) || isnan(humidity)) {
+
+    Serial.println("DHT11 ERROR - Reading failed");
+
+    // Keep values safe
+    temperature = -1;
+    humidity = -1;
+  }
+
+  // ================= GAS =================
+
+  int gasValue = analogRead(GAS_PIN);
+
+  // ================= VIBRATION =================
+
+  int vibrationReading = digitalRead(VIBRATION_PIN);
+
+  // Debounce vibration sensor
+  if (vibrationReading != lastVibration) {
+    vibrationChangeTime = millis();
+    lastVibration = vibrationReading;
+  }
+
+  if (millis() - vibrationChangeTime > 100) {
+    stableVibration = vibrationReading;
+  }
+
+  // ================= FLAME =================
+
+  int flameReading = digitalRead(FLAME_PIN);
+
+  int flameStatus = 0;
+
+  if (flameReading == FLAME_DETECTED) {
+    flameStatus = 1;
+  } else {
+    flameStatus = 0;
+  }
+
+  // ================= PACKET ID =================
+
+  packetID++;
+
+  // ================= CREATE PACKET =================
+
+  String packet = "";
+
+  packet += String(packetID);
+  packet += ",";
+  packet += String(temperature, 1);
+  packet += ",";
+  packet += String(humidity, 1);
+  packet += ",";
+  packet += String(gasValue);
+  packet += ",";
+  packet += String(stableVibration);
+  packet += ",";
+  packet += String(flameStatus);
+
+  // ================= SERIAL OUTPUT =================
+
+  Serial.println("---------------------------------");
+
+  Serial.print("Packet ID : ");
+  Serial.println(packetID);
+
+  Serial.print("Temperature: ");
+  Serial.print(temperature);
+  Serial.println(" °C");
+
+  Serial.print("Humidity   : ");
+  Serial.print(humidity);
+  Serial.println(" %");
+
+  Serial.print("Gas        : ");
+  Serial.println(gasValue);
+
+  Serial.print("Vibration  : ");
+
+  if (stableVibration == 1)
+    Serial.println("DETECTED");
+  else
+    Serial.println("NORMAL");
+
+  Serial.print("Fire       : ");
+
+  if (flameStatus == 1)
+    Serial.println("DETECTED");
+  else
+    Serial.println("NORMAL");
+
+  Serial.print("LoRa Packet: ");
+  Serial.println(packet);
+
+  // ================= SEND LoRa =================
+
+  LoRa.beginPacket();
+  LoRa.print(packet);
+  LoRa.endPacket();
+
+  Serial.println("Packet transmitted successfully.");
+
+  delay(3000);
+}
